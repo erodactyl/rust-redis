@@ -1,4 +1,3 @@
-#![allow(unused_imports)]
 use std::{
     io::{prelude::*, BufReader, Write},
     net::{TcpListener, TcpStream},
@@ -22,14 +21,14 @@ fn main() {
     }
 }
 
-fn handle_connection(mut stream: TcpStream) {
+fn handle_connection(stream: TcpStream) {
     let mut writer = stream.try_clone().unwrap();
     let buf_reader = BufReader::new(&stream);
 
     for line in buf_reader.lines() {
         let line = line.unwrap();
         if line == "PING" {
-            writer.write_all("+PONG\r\n".as_bytes());
+            writer.write_all("+PONG\r\n".as_bytes()).unwrap();
         }
     }
 }
