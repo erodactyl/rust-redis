@@ -4,20 +4,27 @@ use std::{
     net::{TcpListener, TcpStream},
     thread,
 };
+use thread_safe_map::ThreadSafeMap;
+mod thread_safe_map;
 
 enum Command {
     Ping,
     Echo(String),
+    Get(String),
+    Set(String, String),
 }
 
 fn main() -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:6379")?;
 
+    let map: ThreadSafeMap<String, String> = ThreadSafeMap::new();
+
     for stream in listener.incoming() {
         match stream {
             Ok(mut _stream) => {
-                thread::spawn(|| {
-                    handle_connection(_stream).unwrap();
+                let map = map.clone();
+                thread::spawn(move || {
+                    handle_connection(_stream, map).unwrap();
                 });
             }
             Err(e) => {
@@ -29,7 +36,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn handle_connection(stream: TcpStream) -> Result<()> {
+fn handle_connection(stream: TcpStream, map: ThreadSafeMap<String, String>) -> Result<()> {
     let mut writer = stream.try_clone()?;
     let buf_reader = BufReader::new(&stream);
 
@@ -50,7 +57,7 @@ fn handle_connection(stream: TcpStream) -> Result<()> {
                 current_message_length = Some(message_length);
             } else if line.starts_with("$") {
                 // Bulk string, next line contains a string, read it into current_message
-                let line = lines_iterator.next().unwrap().unwrap().trim().to_string();
+                let line = lines_iterator.next().unwrap()?.trim().to_string();
                 current_message.push(line);
                 read_lines += 1;
             }
@@ -58,7 +65,7 @@ fn handle_connection(stream: TcpStream) -> Result<()> {
             if let Some(msg_length) = current_message_length {
                 if msg_length == read_lines {
                     let command = get_command_from_message(&current_message);
-                    handle_command(command, &mut writer)?;
+                    handle_command(command, &mut writer, &map)?;
 
                     // Reset state
                     current_message = vec![];
@@ -78,21 +85,37 @@ fn get_command_from_message(message: &Vec<String>) -> Command {
     match message[0].to_uppercase().as_str() {
         "PING" => Command::Ping,
         "ECHO" => Command::Echo(message[1].clone()),
-        _ => panic!("No pattern found"),
+        "GET" => Command::Get(message[1].clone()),
+        "SET" => Command::Set(message[1].clone(), message[2].clone()),
+        _ => panic!(),
     }
 }
 
-fn handle_command(command: Command, writer: &mut TcpStream) -> Result<()> {
+fn handle_command(
+    command: Command,
+    writer: &mut TcpStream,
+    map: &ThreadSafeMap<String, String>,
+) -> Result<()> {
     match command {
         Command::Ping => {
             writer.write_all(b"+PONG\r\n")?;
         }
         Command::Echo(line) => {
-            writer.write_all(b"$")?;
-            writer.write_all(line.len().to_string().as_bytes())?;
-            writer.write_all(b"\r\n")?;
-            writer.write_all(line.as_bytes())?;
-            writer.write_all(b"\r\n")?;
+            let response = format!("${}\r\n{line}\r\n", line.len());
+            writer.write_all(response.as_bytes())?;
+        }
+        Command::Get(key) => {
+            let value = map.get(key);
+            if let Some(value) = value {
+                let response = format!("${}\r\n{value}\r\n", value.len());
+                writer.write_all(response.as_bytes())?;
+            } else {
+                writer.write_all(b"$-1\r\n")?;
+            }
+        }
+        Command::Set(key, value) => {
+            map.set(key, value);
+            writer.write_all(b"+OK\r\n")?;
         }
     }
 
